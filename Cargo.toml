@@ -1,0 +1,12 @@
+[package]
+name = "wgpu-tuto"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = { version = "1", features = ["backtrace"] }
+env_logger = "0.11"
+log = "0.4"
+pollster = "0.3"
+wgpu = "22.0"
+winit = { version = "0.29", features = ["rwh_05"] }
