@@ -1,4 +1,5 @@
 use anyhow::Context;
+use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::*;
 use winit::event_loop::EventLoop;
 use winit::keyboard::{KeyCode, PhysicalKey};
@@ -10,6 +11,7 @@ struct State<'a> {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     size: winit::dpi::PhysicalSize<u32>,
+    clear_color: wgpu::Color,
     render_pipeline: wgpu::RenderPipeline,
     // The window must be declared after the surface so
     // it gets dropped after it as the surface contains
@@ -134,6 +136,7 @@ impl<'a> State<'a> {
             queue,
             config,
             size,
+            clear_color: wgpu::Color::BLACK,
             render_pipeline,
         })
     }
@@ -153,8 +156,24 @@ impl<'a> State<'a> {
 
     /// Indicate whether an event has been fully processed.
     /// If true, the main loop won't process the event any further.
-    fn input(&mut self, _event: &WindowEvent) -> bool {
-        false
+    fn input(&mut self, event: &WindowEvent) -> bool {
+        match event {
+            WindowEvent::CursorMoved {
+                position: PhysicalPosition { x, y },
+                ..
+            } => {
+                let PhysicalSize { height, width } = self.size;
+                self.clear_color = wgpu::Color {
+                    r: x / self.size.width as f64,
+                    g: y / self.size.height as f64,
+                    b: (x + y) / (width + height) as f64,
+                    a: 1.0,
+                };
+                true
+            }
+
+            _ => false,
+        }
     }
 
     fn update(&mut self) {}
@@ -179,12 +198,7 @@ impl<'a> State<'a> {
                 view: &view, // we render to the screen
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: 0.1,
-                        g: 0.2,
-                        b: 0.3,
-                        a: 1.0,
-                    }),
+                    load: wgpu::LoadOp::Clear(self.clear_color),
                     store: wgpu::StoreOp::Store,
                 },
             })],
@@ -242,7 +256,6 @@ pub async fn run() -> anyhow::Result<()> {
                             Err(e) => log::error!("{:?}", e),
                         }
                     }
-
                     _ => {}
                 }
             }
