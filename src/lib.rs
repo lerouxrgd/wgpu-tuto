@@ -194,14 +194,17 @@ impl<'a> State<'a> {
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: "Render Pass".into(),
             // describe where we are going to draw our color to
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &view, // we render to the screen
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(self.clear_color),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
+            color_attachments: &[
+                // This is what @location(0) in the fragment shader targets
+                Some(wgpu::RenderPassColorAttachment {
+                    view: &view, // we render to the screen
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(self.clear_color),
+                        store: wgpu::StoreOp::Store,
+                    },
+                }),
+            ],
             depth_stencil_attachment: None,
             occlusion_query_set: None,
             timestamp_writes: None,
