@@ -1,9 +1,64 @@
 use anyhow::Context;
+use wgpu::util::DeviceExt;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::*;
 use winit::event_loop::EventLoop;
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowBuilder};
+
+const VERTICES: &[Vertex] = &[
+    Vertex {
+        position: [0.0, 0.5, 0.0],
+        color: [1.0, 0.0, 0.0],
+    },
+    Vertex {
+        position: [-0.5, -0.5, 0.0],
+        color: [0.0, 1.0, 0.0],
+    },
+    Vertex {
+        position: [0.5, -0.5, 0.0],
+        color: [0.0, 0.0, 1.0],
+    },
+];
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct Vertex {
+    position: [f32; 3],
+    color: [f32; 3],
+}
+
+impl Vertex {
+    fn desc() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &[
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 0,
+                    format: wgpu::VertexFormat::Float32x3,
+                },
+                wgpu::VertexAttribute {
+                    offset: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Float32x3,
+                },
+            ],
+        }
+    }
+
+    // const ATTRIBS: [wgpu::VertexAttribute; 2] =
+    //     wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3];
+    // fn desc() -> wgpu::VertexBufferLayout<'static> {
+    //     use std::mem;
+    //     wgpu::VertexBufferLayout {
+    //         array_stride: mem::size_of::<Self>() as wgpu::BufferAddress,
+    //         step_mode: wgpu::VertexStepMode::Vertex,
+    //         attributes: &Self::ATTRIBS,
+    //     }
+    // }
+}
 
 struct State<'a> {
     surface: wgpu::Surface<'a>,
@@ -13,6 +68,8 @@ struct State<'a> {
     size: winit::dpi::PhysicalSize<u32>,
     clear_color: wgpu::Color,
     render_pipeline: wgpu::RenderPipeline,
+    vertex_buffer: wgpu::Buffer,
+    num_vertices: u32,
     // The window must be declared after the surface so
     // it gets dropped after it as the surface contains
     // unsafe references to the window's resources.
@@ -93,7 +150,7 @@ impl<'a> State<'a> {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: "vs_main",
-                buffers: &[],
+                buffers: &[Vertex::desc()],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -129,6 +186,12 @@ impl<'a> State<'a> {
             cache: None,     // allows wgpu to cache shader compilation data
         });
 
+        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: "Vertex Buffer".into(),
+            contents: bytemuck::cast_slice(VERTICES),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+
         Ok(Self {
             window,
             surface,
@@ -138,6 +201,8 @@ impl<'a> State<'a> {
             size,
             clear_color: wgpu::Color::BLACK,
             render_pipeline,
+            vertex_buffer,
+            num_vertices: VERTICES.len() as u32,
         })
     }
 
@@ -164,8 +229,8 @@ impl<'a> State<'a> {
             } => {
                 let PhysicalSize { height, width } = self.size;
                 self.clear_color = wgpu::Color {
-                    r: x / self.size.width as f64,
-                    g: y / self.size.height as f64,
+                    r: x / width as f64,
+                    g: y / height as f64,
                     b: (x + y) / (width + height) as f64,
                     a: 1.0,
                 };
@@ -210,7 +275,8 @@ impl<'a> State<'a> {
             timestamp_writes: None,
         });
         render_pass.set_pipeline(&self.render_pipeline);
-        render_pass.draw(0..3, 0..1); // three vertices and one instance (vertex_index)
+        render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+        render_pass.draw(0..self.num_vertices, 0..1);
         drop(render_pass);
 
         // submit will accept anything that implements IntoIter
