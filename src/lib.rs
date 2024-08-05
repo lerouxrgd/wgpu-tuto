@@ -305,7 +305,7 @@ impl<'a> State<'a> {
         let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: "Instance Buffer".into(),
             contents: bytemuck::cast_slice(&instance_data),
-            usage: wgpu::BufferUsages::VERTEX,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         });
 
         let camera = Camera {
@@ -473,6 +473,23 @@ impl<'a> State<'a> {
             &self.camera_buffer,
             0,
             bytemuck::cast_slice(&[self.camera_uniform]),
+        );
+
+        const ROTATION_SPEED: f32 = 2.0 * std::f32::consts::PI / 120.0;
+        for instance in &mut self.instances {
+            let amount = cgmath::Quaternion::from_angle_y(cgmath::Rad(ROTATION_SPEED));
+            let current = instance.rotation;
+            instance.rotation = amount * current;
+        }
+        let instance_data = self
+            .instances
+            .iter()
+            .map(Instance::to_raw)
+            .collect::<Vec<_>>();
+        self.queue.write_buffer(
+            &self.instance_buffer,
+            0,
+            bytemuck::cast_slice(&instance_data),
         );
     }
 
