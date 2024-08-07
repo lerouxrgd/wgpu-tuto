@@ -1,4 +1,5 @@
 mod camera;
+mod depth;
 mod texture;
 
 use anyhow::Context;
@@ -11,6 +12,7 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowBuilder};
 
 use crate::camera::{Camera, CameraController, CameraUniform};
+use crate::depth::DepthPass;
 
 const VERTICES: &[Vertex] = &[
     Vertex {
@@ -160,7 +162,7 @@ struct State<'a> {
     diffuse_bind_group: wgpu::BindGroup,
     #[allow(dead_code)]
     diffuse_texture: texture::Texture,
-    depth_texture: texture::Texture,
+    depth_pass: DepthPass,
     // The window must be declared after the surface so
     // it gets dropped after it as the surface contains
     // unsafe references to the window's resources.
@@ -309,8 +311,7 @@ impl<'a> State<'a> {
             usage: wgpu::BufferUsages::VERTEX, // | wgpu::BufferUsages::COPY_DST
         });
 
-        let depth_texture =
-            texture::Texture::create_depth_texture(&device, &config, "depth_texture");
+        let depth_pass = DepthPass::new(&device, &config);
 
         let camera = Camera {
             // position the camera 1 unit up and 2 units back
@@ -433,7 +434,7 @@ impl<'a> State<'a> {
             instance_buffer,
             diffuse_bind_group,
             diffuse_texture,
-            depth_texture,
+            depth_pass,
             camera,
             camera_uniform,
             camera_buffer,
@@ -452,8 +453,8 @@ impl<'a> State<'a> {
             self.config.width = new_size.width;
             self.config.height = new_size.height;
             self.surface.configure(&self.device, &self.config);
-            self.depth_texture =
-                texture::Texture::create_depth_texture(&self.device, &self.config, "depth_texture");
+            self.camera.aspect = self.config.width as f32 / self.config.height as f32;
+            self.depth_pass.resize(&self.device, &self.config);
         }
     }
 
@@ -534,7 +535,7 @@ impl<'a> State<'a> {
                 }),
             ],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: &self.depth_texture.view,
+                view: &self.depth_pass.texture.view,
                 depth_ops: Some(wgpu::Operations {
                     load: wgpu::LoadOp::Clear(1.0),
                     store: wgpu::StoreOp::Store,
@@ -552,6 +553,8 @@ impl<'a> State<'a> {
         render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
         render_pass.draw_indexed(0..self.num_indices, 0, 0..self.instances.len() as u32);
         drop(render_pass);
+
+        // self.depth_pass.render(&view, &mut encoder);
 
         // submit will accept anything that implements IntoIter
         self.queue.submit(std::iter::once(encoder.finish()));
