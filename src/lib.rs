@@ -336,7 +336,6 @@ impl<'a> State<'a> {
                 ],
                 push_constant_ranges: &[],
             });
-
             create_render_pipeline(
                 &device,
                 &layout,
