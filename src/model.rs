@@ -12,7 +12,48 @@ pub struct Material {
     pub _name: String,
     #[allow(dead_code)]
     pub diffuse_texture: texture::Texture,
+    #[allow(dead_code)]
+    pub normal_texture: texture::Texture,
     pub bind_group: wgpu::BindGroup,
+}
+
+impl Material {
+    pub fn new(
+        device: &wgpu::Device,
+        name: &str,
+        diffuse_texture: texture::Texture,
+        normal_texture: texture::Texture,
+        layout: &wgpu::BindGroupLayout,
+    ) -> Self {
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: name.into(),
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&diffuse_texture.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&diffuse_texture.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&normal_texture.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::Sampler(&normal_texture.sampler),
+                },
+            ],
+        });
+        Self {
+            _name: String::from(name),
+            diffuse_texture,
+            normal_texture,
+            bind_group,
+        }
+    }
 }
 
 pub struct Mesh {
@@ -33,12 +74,19 @@ pub struct ModelVertex {
     pub position: [f32; 3],
     pub tex_coords: [f32; 2],
     pub normal: [f32; 3],
+    pub tangent: [f32; 3],
+    pub bitangent: [f32; 3],
 }
 
 impl Vertex for ModelVertex {
     fn desc() -> wgpu::VertexBufferLayout<'static> {
-        const ATTRIBS: [wgpu::VertexAttribute; 3] =
-            wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32x3];
+        const ATTRIBS: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
+            0 => Float32x3,
+            1 => Float32x2,
+            2 => Float32x3,
+            3 => Float32x3,
+            4 => Float32x3
+        ];
         wgpu::VertexBufferLayout {
             array_stride: mem::size_of::<Self>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Vertex,
