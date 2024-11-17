@@ -1,4 +1,5 @@
 mod camera;
+mod hdr;
 mod model;
 mod resources;
 mod texture;
@@ -132,6 +133,7 @@ struct State<'a> {
     light_buffer: wgpu::Buffer,
     light_bind_group: wgpu::BindGroup,
     light_render_pipeline: wgpu::RenderPipeline,
+    hdr: hdr::HdrPipeline,
 }
 
 impl<'a> State<'a> {
@@ -259,6 +261,8 @@ impl<'a> State<'a> {
         let depth_texture =
             texture::Texture::create_depth_texture(&device, &config, "depth_texture");
 
+        let hdr = hdr::HdrPipeline::new(&device, &config);
+
         let camera = camera::Camera::new((0.0, 5.0, 10.0), cgmath::Deg(-90.0), cgmath::Deg(-20.0));
         let projection =
             camera::Projection::new(config.width, config.height, cgmath::Deg(45.0), 0.1, 100.0);
@@ -340,9 +344,10 @@ impl<'a> State<'a> {
             create_render_pipeline(
                 &device,
                 &layout,
-                config.format,
+                hdr.format(),
                 Some(texture::Texture::DEPTH_FORMAT),
                 &[model::ModelVertex::desc()],
+                wgpu::PrimitiveTopology::TriangleList,
                 shader,
             )
         };
@@ -364,9 +369,10 @@ impl<'a> State<'a> {
             create_render_pipeline(
                 &device,
                 &layout,
-                config.format,
+                hdr.format(),
                 Some(texture::Texture::DEPTH_FORMAT),
                 &[model::ModelVertex::desc(), InstanceRaw::desc()],
+                wgpu::PrimitiveTopology::TriangleList,
                 shader,
             )
         };
@@ -395,6 +401,7 @@ impl<'a> State<'a> {
             light_buffer,
             light_bind_group,
             light_render_pipeline,
+            hdr,
         })
     }
 
@@ -411,6 +418,8 @@ impl<'a> State<'a> {
             self.projection.resize(new_size.width, new_size.height);
             self.depth_texture =
                 texture::Texture::create_depth_texture(&self.device, &self.config, "depth_texture");
+            self.hdr
+                .resize(&self.device, new_size.width, new_size.height);
         }
     }
 
@@ -504,7 +513,7 @@ impl<'a> State<'a> {
             color_attachments: &[
                 // This is what @location(0) in the fragment shader targets
                 Some(wgpu::RenderPassColorAttachment {
-                    view: &view, // we render to the screen
+                    view: self.hdr.view(), // we render to the HDR texture
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(self.clear_color),
@@ -542,6 +551,8 @@ impl<'a> State<'a> {
         );
 
         drop(render_pass);
+        self.hdr.process(&mut encoder, &view); // Render HDR texture to screen with tonemapping
+
         self.queue.submit(std::iter::once(encoder.finish()));
         output.present();
 
@@ -555,6 +566,7 @@ fn create_render_pipeline(
     color_format: wgpu::TextureFormat,
     depth_format: Option<wgpu::TextureFormat>,
     vertex_layouts: &[wgpu::VertexBufferLayout],
+    topology: wgpu::PrimitiveTopology,
     shader: wgpu::ShaderModuleDescriptor,
 ) -> wgpu::RenderPipeline {
     let shader = device.create_shader_module(shader);
@@ -580,7 +592,7 @@ fn create_render_pipeline(
         }),
         // describes how to interpret our vertices when converting them into triangles.
         primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleList,
+            topology,
             strip_index_format: None,
             front_face: wgpu::FrontFace::Ccw,
             cull_mode: Some(wgpu::Face::Back),
