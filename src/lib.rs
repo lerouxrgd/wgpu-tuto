@@ -701,7 +701,10 @@ fn create_render_pipeline(
 
 pub async fn run() -> anyhow::Result<()> {
     let event_loop = EventLoop::new()?;
-    let window = WindowBuilder::new().build(&event_loop)?;
+    let window = WindowBuilder::new()
+        .with_min_inner_size(winit::dpi::PhysicalSize::new(2048, 1152))
+        .with_max_inner_size(winit::dpi::PhysicalSize::new(2048, 1152)) // for pure-sky.hdr
+        .build(&event_loop)?;
 
     let mut state = State::new(&window).await?;
 
