@@ -12,6 +12,7 @@ log = "0.4"
 image = { version = "0.24", default-features = false, features = [
   "png",
   "jpeg",
+  "hdr",
 ] }
 pollster = "0.3"
 tobj = { version = "4", features = ["async"] }
