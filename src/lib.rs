@@ -6,7 +6,7 @@ mod texture;
 
 use std::time::{Duration, Instant};
 
-use anyhow::Context;
+use anyhow::{anyhow, Context};
 use cgmath::prelude::*;
 use wgpu::util::DeviceExt;
 use winit::event::*;
@@ -136,6 +136,8 @@ struct State<'a> {
     hdr: hdr::HdrPipeline,
     environment_bind_group: wgpu::BindGroup,
     sky_pipeline: wgpu::RenderPipeline,
+    gilrs_obj: gilrs::Gilrs,
+    gamepad_id: Option<gilrs::GamepadId>,
 }
 
 impl<'a> State<'a> {
@@ -475,6 +477,8 @@ impl<'a> State<'a> {
             hdr,
             environment_bind_group,
             sky_pipeline,
+            gilrs_obj: gilrs::Gilrs::new().map_err(|e| anyhow!("{e}"))?,
+            gamepad_id: None,
         })
     }
 
@@ -519,6 +523,9 @@ impl<'a> State<'a> {
                 ..
             } => {
                 self.mouse_pressed = *state == ElementState::Pressed;
+                if !self.mouse_pressed {
+                    self.camera_controller.process_mouse(0.0, 0.0);
+                }
                 true
             }
             _ => false,
@@ -708,20 +715,33 @@ pub async fn run() -> anyhow::Result<()> {
 
     let mut state = State::new(&window).await?;
 
+    if let Some((id, gamepad)) = state.gilrs_obj.gamepads().next() {
+        state.gamepad_id = Some(id);
+        log::info!("{} is {:?}", gamepad.name(), gamepad.power_info());
+    }
+
     let mut last_render_time = Instant::now();
-    event_loop.run(|event, control_flow| match event {
-        Event::DeviceEvent {
-            event: DeviceEvent::MouseMotion{ delta, },
-            .. // We're not using device_id currently
-        } => if state.mouse_pressed {
-            state.camera_controller.process_mouse(delta.0, delta.1)
+    event_loop.run(|event, control_flow| {
+        while let Some(gilrs::Event { id, event, .. }) = state.gilrs_obj.next_event() {
+            if state.gamepad_id.map(|gid| gid != id).unwrap_or(true) {
+                continue;
+            }
+            state.camera_controller.process_gamepad(event);
         }
 
-        Event::WindowEvent {
-            ref event,
-            window_id,
-        } if window_id == window.id() && !state.input(event) => match event {
-            WindowEvent::CloseRequested
+        match event {
+            Event::DeviceEvent {
+                event: DeviceEvent::MouseMotion{ delta, },
+                .. // We're not using device_id currently
+            } => if state.mouse_pressed {
+                state.camera_controller.process_mouse(delta.0, delta.1)
+            }
+
+            Event::WindowEvent {
+                ref event,
+                window_id,
+            } if window_id == window.id() && !state.input(event) => match event {
+                WindowEvent::CloseRequested
             | WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
@@ -731,33 +751,34 @@ pub async fn run() -> anyhow::Result<()> {
                     },
                 ..
             } => control_flow.exit(),
-            WindowEvent::Resized(physical_size) => {
-                state.resize(*physical_size);
-            }
-            WindowEvent::RedrawRequested => {
-                let now = Instant::now();
-                let dt = now - last_render_time;
-                last_render_time = now;
-                state.update(dt);
-                match state.render() {
-                    Ok(_) => {}
-                    // Reconfigure the surface if lost
-                    Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
-                    // The system is out of memory, we should probably quit
-                    Err(wgpu::SurfaceError::OutOfMemory) => control_flow.exit(),
-                    // All other errors (Outdated, Timeout) should be resolved by the next frame
-                    Err(e) => log::error!("{:?}", e),
+                WindowEvent::Resized(physical_size) => {
+                    state.resize(*physical_size);
                 }
+                WindowEvent::RedrawRequested => {
+                    let now = Instant::now();
+                    let dt = now - last_render_time;
+                    last_render_time = now;
+                    state.update(dt);
+                    match state.render() {
+                        Ok(_) => {}
+                        // Reconfigure the surface if lost
+                        Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
+                        // The system is out of memory, we should probably quit
+                        Err(wgpu::SurfaceError::OutOfMemory) => control_flow.exit(),
+                        // All other errors (Outdated, Timeout) should be resolved by the next frame
+                        Err(e) => log::error!("{:?}", e),
+                    }
+                }
+                _ => {}
             }
+
+            Event::AboutToWait => {
+                // RedrawRequested will only trigger once unless we manually request it
+                state.window().request_redraw();
+            }
+
             _ => {}
         }
-
-        Event::AboutToWait => {
-            // RedrawRequested will only trigger once unless we manually request it
-            state.window().request_redraw();
-        }
-
-        _ => {}
     })?;
 
     Ok(())

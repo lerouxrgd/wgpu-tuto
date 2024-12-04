@@ -77,6 +77,8 @@ pub struct CameraController {
     rotate_horizontal: f32,
     rotate_vertical: f32,
     scroll: f32,
+    scrolling_out: bool,
+    scrolling_in: bool,
     speed: f32,
     sensitivity: f32,
 }
@@ -93,8 +95,83 @@ impl CameraController {
             rotate_horizontal: 0.0,
             rotate_vertical: 0.0,
             scroll: 0.0,
+            scrolling_out: false,
+            scrolling_in: false,
             speed,
             sensitivity,
+        }
+    }
+
+    pub fn process_gamepad(&mut self, event: gilrs::EventType) {
+        match event {
+            gilrs::EventType::AxisChanged(gilrs::Axis::LeftStickX, amount, _) => {
+                if amount < -0.4 {
+                    self.amount_left = 1.0;
+                } else if amount > 0.4 {
+                    self.amount_right = 1.0;
+                } else {
+                    self.amount_left = 0.0;
+                    self.amount_right = 0.0;
+                }
+            }
+            gilrs::EventType::AxisChanged(gilrs::Axis::LeftStickY, amount, _) => {
+                if amount < -0.4 {
+                    self.amount_backward = 1.0;
+                } else if amount > 0.4 {
+                    self.amount_forward = 1.0;
+                } else {
+                    self.amount_backward = 0.0;
+                    self.amount_forward = 0.0;
+                }
+            }
+            gilrs::EventType::ButtonPressed(gilrs::Button::LeftTrigger, _)
+            | gilrs::EventType::ButtonPressed(gilrs::Button::DPadDown, _) => {
+                self.amount_down = 1.0;
+            }
+            gilrs::EventType::ButtonReleased(gilrs::Button::LeftTrigger, _)
+            | gilrs::EventType::ButtonReleased(gilrs::Button::DPadDown, _) => {
+                self.amount_down = 0.0;
+            }
+            gilrs::EventType::ButtonPressed(gilrs::Button::RightTrigger, _)
+            | gilrs::EventType::ButtonPressed(gilrs::Button::DPadUp, _) => {
+                self.amount_up = 1.0;
+            }
+            gilrs::EventType::ButtonReleased(gilrs::Button::RightTrigger, _)
+            | gilrs::EventType::ButtonReleased(gilrs::Button::DPadUp, _) => {
+                self.amount_up = 0.0;
+            }
+
+            gilrs::EventType::AxisChanged(gilrs::Axis::RightStickX, amount, _) => {
+                if amount.abs() > 0.4 {
+                    self.rotate_horizontal = amount as f32 * 10.0;
+                } else {
+                    self.rotate_horizontal = 0.0;
+                }
+            }
+            gilrs::EventType::AxisChanged(gilrs::Axis::RightStickY, amount, _) => {
+                if amount.abs() > 0.4 {
+                    self.rotate_vertical = -amount as f32 * 10.0;
+                } else {
+                    self.rotate_vertical = 0.0;
+                }
+            }
+            gilrs::EventType::ButtonPressed(gilrs::Button::LeftTrigger2, _)
+            | gilrs::EventType::ButtonPressed(gilrs::Button::DPadLeft, _) => {
+                self.scrolling_out = true;
+            }
+            gilrs::EventType::ButtonReleased(gilrs::Button::LeftTrigger2, _)
+            | gilrs::EventType::ButtonReleased(gilrs::Button::DPadLeft, _) => {
+                self.scrolling_out = false;
+            }
+            gilrs::EventType::ButtonPressed(gilrs::Button::RightTrigger2, _)
+            | gilrs::EventType::ButtonPressed(gilrs::Button::DPadRight, _) => {
+                self.scrolling_in = true;
+            }
+            gilrs::EventType::ButtonReleased(gilrs::Button::RightTrigger2, _)
+            | gilrs::EventType::ButtonReleased(gilrs::Button::DPadRight, _) => {
+                self.scrolling_in = false;
+            }
+            _ => {}
         }
     }
 
@@ -164,7 +241,13 @@ impl CameraController {
         let scrollward =
             Vector3::new(pitch_cos * yaw_cos, pitch_sin, pitch_cos * yaw_sin).normalize();
         camera.position += scrollward * self.scroll * self.speed * self.sensitivity * dt;
-        self.scroll = 0.0;
+        if self.scrolling_out {
+            self.scroll -= 0.2;
+        } else if self.scrolling_in {
+            self.scroll += 0.2;
+        } else {
+            self.scroll = 0.0;
+        }
 
         // Move up/down. Since we don't use roll, we can just
         // modify the y coordinate directly.
@@ -173,12 +256,6 @@ impl CameraController {
         // Rotate
         camera.yaw += Rad(self.rotate_horizontal) * self.sensitivity * dt;
         camera.pitch += Rad(-self.rotate_vertical) * self.sensitivity * dt;
-
-        // If process_mouse isn't called every frame, these values
-        // will not get set to zero, and the camera will rotate
-        // when moving in a non-cardinal direction.
-        self.rotate_horizontal = 0.0;
-        self.rotate_vertical = 0.0;
 
         // Keep the camera's angle from going too high/low.
         if camera.pitch < -Rad(SAFE_FRAC_PI_2) {
