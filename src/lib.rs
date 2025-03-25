@@ -6,7 +6,7 @@ mod texture;
 
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
 use cgmath::prelude::*;
 use wgpu::util::DeviceExt;
 use winit::event::*;
@@ -271,7 +271,7 @@ impl<'a> State<'a> {
         let hdr = hdr::HdrPipeline::new(&device, &config);
 
         let hdr_loader = resources::HdrLoader::new(&device);
-        let sky_bytes = resources::load_binary("pure-sky.hdr").await?;
+        let sky_bytes = resources::load_binary("pure-sky.hdr")?;
         let sky_texture = hdr_loader.from_equirectangular_bytes(
             &device,
             &queue,
