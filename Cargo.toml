@@ -16,7 +16,7 @@ image = { version = "0.25", default-features = false, features = [
   "jpeg",
   "hdr",
 ] }
-pollster = "0.3"
+pollster = "0.4"
 tobj = { version = "4", features = ["futures"] }
 wgpu = "22.0"
 winit = { version = "0.29", default-features = false, features = [
