@@ -4,6 +4,7 @@ use std::{env, fs};
 
 use anyhow::Context;
 use futures_lite::io::BufReader;
+use image::ImageDecoder;
 use image::codecs::hdr::HdrDecoder;
 use wgpu::util::DeviceExt;
 
@@ -273,17 +274,14 @@ impl HdrLoader {
         let hdr_decoder = HdrDecoder::new(Cursor::new(data))?;
         let meta = hdr_decoder.metadata();
 
-        let pixels = {
-            let mut pixels = vec![[0.0, 0.0, 0.0, 0.0]; meta.width as usize * meta.height as usize];
-            hdr_decoder.read_image_transform(
-                |pix| {
-                    let rgb = pix.to_hdr();
-                    [rgb.0[0], rgb.0[1], rgb.0[2], 1.0f32]
-                },
-                &mut pixels[..],
-            )?;
-            pixels
-        };
+        let mut buf = vec![0; hdr_decoder.total_bytes() as usize];
+        hdr_decoder.read_image(&mut buf)?;
+        let mut pixels = vec![[0.0, 0.0, 0.0, 1.0f32]; meta.width as usize * meta.height as usize];
+        for (rgb, rgba) in buf.as_slice().chunks_exact(3 * 4).zip(pixels.iter_mut()) {
+            rgba[0] = *bytemuck::from_bytes(&rgb[0..4]);
+            rgba[1] = *bytemuck::from_bytes(&rgb[4..8]);
+            rgba[2] = *bytemuck::from_bytes(&rgb[8..12]);
+        }
 
         let src = texture::Texture::create_2d_texture(
             device,
