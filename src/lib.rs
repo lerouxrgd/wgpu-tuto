@@ -8,11 +8,13 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, anyhow};
 use cgmath::prelude::*;
+use ouroboros::self_referencing;
 use wgpu::util::DeviceExt;
+use winit::application::ApplicationHandler;
 use winit::event::*;
-use winit::event_loop::EventLoop;
+use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
-use winit::window::{Window, WindowBuilder};
+use winit::window::{Window, WindowAttributes, WindowId};
 
 use crate::model::{DrawLight, DrawModel, Vertex};
 
@@ -107,8 +109,39 @@ struct LightUniform {
     _padding2: u32,
 }
 
-struct State<'a> {
-    surface: wgpu::Surface<'a>,
+#[self_referencing]
+struct Canvas {
+    window: Window,
+    instance: wgpu::Instance,
+    #[borrows(window, instance)]
+    #[covariant]
+    surface: wgpu::Surface<'this>,
+}
+
+impl Canvas {
+    pub fn window_id(&self) -> WindowId {
+        self.borrow_window().id()
+    }
+}
+
+impl TryFrom<Window> for Canvas {
+    type Error = wgpu::CreateSurfaceError;
+
+    fn try_from(window: Window) -> Result<Self, Self::Error> {
+        CanvasTryBuilder {
+            window,
+            instance: wgpu::Instance::new(&wgpu::InstanceDescriptor {
+                backends: wgpu::Backends::PRIMARY,
+                ..Default::default()
+            }),
+            surface_builder: |window, instance| instance.create_surface(window),
+        }
+        .try_build()
+    }
+}
+
+struct State {
+    canvas: Canvas,
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
@@ -119,9 +152,6 @@ struct State<'a> {
     instance_buffer: wgpu::Buffer,
     depth_texture: texture::Texture,
     render_pipeline: wgpu::RenderPipeline,
-    // The window must be declared after the surface so it gets dropped after it as the
-    // surface contains unsafe references to the window's resources.
-    window: &'a Window,
     mouse_pressed: bool,
     projection: camera::Projection,
     camera: camera::Camera,
@@ -136,25 +166,16 @@ struct State<'a> {
     hdr: hdr::HdrPipeline,
     environment_bind_group: wgpu::BindGroup,
     sky_pipeline: wgpu::RenderPipeline,
-    gilrs_obj: gilrs::Gilrs,
-    gamepad_id: Option<gilrs::GamepadId>,
 }
 
-impl<'a> State<'a> {
-    async fn new(window: &'a Window) -> anyhow::Result<Self> {
-        let size = window.inner_size();
-
-        // The instance is a handle to our GPU
-        // Backends::all => Vulkan + Metal + DX12 + Browser WebGPU
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::PRIMARY,
-            ..Default::default()
-        });
-        let surface = instance.create_surface(window)?;
-        let adapter = instance
+impl State {
+    async fn new(canvas: Canvas) -> anyhow::Result<Self> {
+        let size = canvas.borrow_window().inner_size();
+        let adapter = canvas
+            .borrow_instance()
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::default(),
-                compatible_surface: Some(&surface),
+                compatible_surface: Some(canvas.borrow_surface()),
                 force_fallback_adapter: false,
             })
             .await
@@ -174,7 +195,7 @@ impl<'a> State<'a> {
             )
             .await?;
 
-        let surface_caps = surface.get_capabilities(&adapter);
+        let surface_caps = canvas.borrow_surface().get_capabilities(&adapter);
         // Shader code in this tutorial assumes an sRGB surface texture. Using a different
         // one will result in all the colors coming out darker. If you want to support non
         // sRGB surfaces, you'll need to account for that when drawing to the frame.
@@ -451,8 +472,7 @@ impl<'a> State<'a> {
         };
 
         Ok(Self {
-            window,
-            surface,
+            canvas,
             device,
             queue,
             config,
@@ -477,13 +497,7 @@ impl<'a> State<'a> {
             hdr,
             environment_bind_group,
             sky_pipeline,
-            gilrs_obj: gilrs::Gilrs::new().map_err(|e| anyhow!("{e}"))?,
-            gamepad_id: None,
         })
-    }
-
-    pub fn window(&self) -> &Window {
-        &self.window
     }
 
     fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
@@ -491,7 +505,9 @@ impl<'a> State<'a> {
             self.size = new_size;
             self.config.width = new_size.width;
             self.config.height = new_size.height;
-            self.surface.configure(&self.device, &self.config);
+            self.canvas
+                .borrow_surface()
+                .configure(&self.device, &self.config);
             self.projection.resize(new_size.width, new_size.height);
             self.depth_texture =
                 texture::Texture::create_depth_texture(&self.device, &self.config, "depth_texture");
@@ -575,7 +591,7 @@ impl<'a> State<'a> {
     }
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
-        let output = self.surface.get_current_texture()?;
+        let output = self.canvas.borrow_surface().get_current_texture()?;
 
         let view = output
             .texture
@@ -706,42 +722,61 @@ fn create_render_pipeline(
     })
 }
 
-pub async fn run() -> anyhow::Result<()> {
-    let event_loop = EventLoop::new()?;
-    let window = WindowBuilder::new()
-        .with_min_inner_size(winit::dpi::PhysicalSize::new(2048, 1152))
-        .with_max_inner_size(winit::dpi::PhysicalSize::new(2048, 1152)) // for pure-sky.hdr
-        .build(&event_loop)?;
+struct App {
+    window_attrs: WindowAttributes,
+    state: Option<State>,
+    last_render_time: Instant,
+    gilrs_obj: gilrs::Gilrs,
+    gamepad_id: Option<gilrs::GamepadId>,
+}
 
-    let mut state = State::new(&window).await?;
+impl App {
+    pub fn new(window_attrs: WindowAttributes) -> anyhow::Result<Self> {
+        let gilrs_obj = gilrs::Gilrs::new().map_err(|e| anyhow!("{e}"))?;
+        let mut gamepad_id = None;
+        if let Some((id, gamepad)) = gilrs_obj.gamepads().next() {
+            gamepad_id = Some(id);
+            log::info!("{} is {:?}", gamepad.name(), gamepad.power_info());
+        }
+        Ok(Self {
+            window_attrs,
+            last_render_time: Instant::now(),
+            state: None,
+            gilrs_obj,
+            gamepad_id,
+        })
+    }
+}
 
-    if let Some((id, gamepad)) = state.gilrs_obj.gamepads().next() {
-        state.gamepad_id = Some(id);
-        log::info!("{} is {:?}", gamepad.name(), gamepad.power_info());
+impl ApplicationHandler for App {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.state.is_some() {
+            return;
+        }
+        let Ok(window) = event_loop.create_window(self.window_attrs.clone()) else {
+            return;
+        };
+        let Ok(canvas) = Canvas::try_from(window) else {
+            return;
+        };
+        self.state = pollster::block_on(async { State::new(canvas).await }).ok();
     }
 
-    let mut last_render_time = Instant::now();
-    event_loop.run(|event, control_flow| {
-        while let Some(gilrs::Event { id, event, .. }) = state.gilrs_obj.next_event() {
-            if state.gamepad_id.map(|gid| gid != id).unwrap_or(true) {
-                continue;
-            }
-            state.camera_controller.process_gamepad(event);
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window_id: WindowId,
+        event: WindowEvent,
+    ) {
+        let Some(state) = &mut self.state else {
+            return;
+        };
+
+        if window_id != state.canvas.window_id() || state.input(&event) {
+            return;
         }
-
         match event {
-            Event::DeviceEvent {
-                event: DeviceEvent::MouseMotion{ delta, },
-                .. // We're not using device_id currently
-            } => if state.mouse_pressed {
-                state.camera_controller.process_mouse(delta.0, delta.1)
-            }
-
-            Event::WindowEvent {
-                ref event,
-                window_id,
-            } if window_id == window.id() && !state.input(event) => match event {
-                WindowEvent::CloseRequested
+            WindowEvent::CloseRequested
             | WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
@@ -750,36 +785,66 @@ pub async fn run() -> anyhow::Result<()> {
                         ..
                     },
                 ..
-            } => control_flow.exit(),
-                WindowEvent::Resized(physical_size) => {
-                    state.resize(*physical_size);
-                }
-                WindowEvent::RedrawRequested => {
-                    let now = Instant::now();
-                    let dt = now - last_render_time;
-                    last_render_time = now;
-                    state.update(dt);
-                    match state.render() {
-                        Ok(_) => {}
-                        // Reconfigure the surface if lost
-                        Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
-                        // The system is out of memory, we should probably quit
-                        Err(wgpu::SurfaceError::OutOfMemory) => control_flow.exit(),
-                        // All other errors (Outdated, Timeout) should be resolved by the next frame
-                        Err(e) => log::error!("{:?}", e),
-                    }
-                }
-                _ => {}
+            } => event_loop.exit(),
+            WindowEvent::Resized(physical_size) => {
+                state.resize(physical_size);
             }
-
-            Event::AboutToWait => {
-                // RedrawRequested will only trigger once unless we manually request it
-                state.window().request_redraw();
+            WindowEvent::RedrawRequested => {
+                let now = Instant::now();
+                let dt = now - self.last_render_time;
+                self.last_render_time = now;
+                state.update(dt);
+                match state.render() {
+                    Ok(_) => {}
+                    // Reconfigure the surface if lost
+                    Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
+                    // The system is out of memory, we should probably quit
+                    Err(wgpu::SurfaceError::OutOfMemory) => event_loop.exit(),
+                    // All other errors (Outdated, Timeout) should be resolved by the next frame
+                    Err(e) => log::error!("{:?}", e),
+                }
             }
-
             _ => {}
         }
-    })?;
+    }
 
+    fn device_event(&mut self, _: &ActiveEventLoop, _: DeviceId, event: DeviceEvent) {
+        let Some(state) = &mut self.state else {
+            return;
+        };
+        match event {
+            DeviceEvent::MouseMotion { delta } => {
+                if state.mouse_pressed {
+                    state.camera_controller.process_mouse(delta.0, delta.1)
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        let Some(state) = &mut self.state else {
+            return;
+        };
+
+        while let Some(gilrs::Event { id, event, .. }) = self.gilrs_obj.next_event() {
+            if self.gamepad_id.map(|gid| gid != id).unwrap_or(true) {
+                continue;
+            }
+            state.camera_controller.process_gamepad(event);
+        }
+
+        // RedrawRequested will only trigger once unless we manually request it
+        state.canvas.borrow_window().request_redraw();
+    }
+}
+
+pub async fn run() -> anyhow::Result<()> {
+    let event_loop = EventLoop::new()?;
+    let window_attrs = Window::default_attributes()
+        .with_min_inner_size(winit::dpi::PhysicalSize::new(2048, 1152))
+        .with_max_inner_size(winit::dpi::PhysicalSize::new(2048, 1152)); // for pure-sky.hdr
+    let mut app = App::new(window_attrs)?;
+    event_loop.run_app(&mut app)?;
     Ok(())
 }
