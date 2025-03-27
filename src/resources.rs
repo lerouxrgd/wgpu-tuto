@@ -1,14 +1,16 @@
-use std::io::{BufReader, Cursor};
+use std::io::Cursor;
 use std::path::Path;
 use std::{env, fs};
 
 use anyhow::Context;
+use futures_lite::io::BufReader;
+use image::ImageDecoder;
 use image::codecs::hdr::HdrDecoder;
 use wgpu::util::DeviceExt;
 
 use crate::{model, texture};
 
-pub async fn load_string(file_name: &str) -> anyhow::Result<String> {
+pub fn load_string(file_name: &str) -> anyhow::Result<String> {
     let path = Path::new(&env::var("OUT_DIR").unwrap_or_else(|_| ".".into()))
         .join("res")
         .join(file_name);
@@ -16,7 +18,7 @@ pub async fn load_string(file_name: &str) -> anyhow::Result<String> {
     Ok(txt)
 }
 
-pub async fn load_binary(file_name: &str) -> anyhow::Result<Vec<u8>> {
+pub fn load_binary(file_name: &str) -> anyhow::Result<Vec<u8>> {
     let path = Path::new(&env::var("OUT_DIR").unwrap_or_else(|_| ".".into()))
         .join("res")
         .join(file_name);
@@ -30,7 +32,7 @@ pub async fn load_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
 ) -> anyhow::Result<texture::Texture> {
-    let data = load_binary(file_name).await?;
+    let data = load_binary(file_name)?;
     texture::Texture::from_bytes(device, queue, &data, file_name, is_normal_map)
 }
 
@@ -40,22 +42,21 @@ pub async fn load_model(
     queue: &wgpu::Queue,
     layout: &wgpu::BindGroupLayout,
 ) -> anyhow::Result<model::Model> {
-    let obj_text = load_string(file_name).await?;
-    let obj_cursor = Cursor::new(obj_text);
-    let mut obj_reader = BufReader::new(obj_cursor);
+    let obj_text = load_string(file_name)?;
+    // let obj_cursor = Cursor::new(obj_text);
+    let mut obj_reader = BufReader::new(obj_text.as_bytes());
 
-    let (models, obj_materials) = tobj::load_obj_buf_async(
+    let (models, obj_materials) = tobj::futures::load_obj_buf(
         &mut obj_reader,
         &tobj::LoadOptions {
             triangulate: true,
             single_index: true,
             ..Default::default()
         },
-        |p| async move {
-            load_string(&p)
-                .await
-                .map(|mat_text| tobj::load_mtl_buf(&mut BufReader::new(Cursor::new(mat_text))))
-                .map_err(|_| tobj::LoadError::ReadError)?
+        async |p| {
+            let mat_text = load_string(p.display().to_string().as_str())
+                .map_err(|_| tobj::LoadError::ReadError)?;
+            tobj::futures::load_mtl_buf(BufReader::new(mat_text.as_bytes())).await
         },
     )
     .await?;
@@ -250,7 +251,7 @@ impl HdrLoader {
                 label: Some("equirect_to_cubemap"),
                 layout: Some(&pipeline_layout),
                 module: &module,
-                entry_point: "compute_equirect_to_cubemap",
+                entry_point: Some("compute_equirect_to_cubemap"),
                 compilation_options: Default::default(),
                 cache: None,
             });
@@ -273,17 +274,14 @@ impl HdrLoader {
         let hdr_decoder = HdrDecoder::new(Cursor::new(data))?;
         let meta = hdr_decoder.metadata();
 
-        let pixels = {
-            let mut pixels = vec![[0.0, 0.0, 0.0, 0.0]; meta.width as usize * meta.height as usize];
-            hdr_decoder.read_image_transform(
-                |pix| {
-                    let rgb = pix.to_hdr();
-                    [rgb.0[0], rgb.0[1], rgb.0[2], 1.0f32]
-                },
-                &mut pixels[..],
-            )?;
-            pixels
-        };
+        let mut buf = vec![0; hdr_decoder.total_bytes() as usize];
+        hdr_decoder.read_image(&mut buf)?;
+        let mut pixels = vec![[0.0, 0.0, 0.0, 1.0f32]; meta.width as usize * meta.height as usize];
+        for (rgb, rgba) in buf.as_slice().chunks_exact(3 * 4).zip(pixels.iter_mut()) {
+            rgba[0] = *bytemuck::from_bytes(&rgb[0..4]);
+            rgba[1] = *bytemuck::from_bytes(&rgb[4..8]);
+            rgba[2] = *bytemuck::from_bytes(&rgb[8..12]);
+        }
 
         let src = texture::Texture::create_2d_texture(
             device,
@@ -296,14 +294,14 @@ impl HdrLoader {
         );
 
         queue.write_texture(
-            wgpu::ImageCopyTexture {
+            wgpu::TexelCopyTextureInfo {
                 texture: &src.texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
             &bytemuck::cast_slice(&pixels),
-            wgpu::ImageDataLayout {
+            wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(src.size.width * std::mem::size_of::<[f32; 4]>() as u32),
                 rows_per_image: Some(src.size.height),
