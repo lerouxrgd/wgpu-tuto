@@ -181,18 +181,16 @@ impl State {
             .await
             .context("Coudln't create adapter")?;
         let (device, queue) = adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    label: None,
-                    required_features: wgpu::Features::all_webgpu_mask()
+            .request_device(&wgpu::DeviceDescriptor {
+                label: None,
+                required_features: wgpu::Features::all_webgpu_mask()
                         // My GPU doesn't have these ...
                         & !wgpu::Features::TEXTURE_COMPRESSION_ETC2
                         & !wgpu::Features::TEXTURE_COMPRESSION_ASTC,
-                    required_limits: wgpu::Limits::downlevel_defaults(),
-                    memory_hints: wgpu::MemoryHints::default(),
-                },
-                None, // Trace path
-            )
+                required_limits: wgpu::Limits::downlevel_defaults(),
+                memory_hints: wgpu::MemoryHints::default(),
+                trace: wgpu::Trace::Off,
+            })
             .await?;
 
         let surface_caps = canvas.borrow_surface().get_capabilities(&adapter);

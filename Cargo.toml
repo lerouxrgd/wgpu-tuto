@@ -19,7 +19,7 @@ image = { version = "0.25", default-features = false, features = [
 ouroboros = "0.18"
 pollster = "0.4"
 tobj = { version = "4", features = ["futures"] }
-wgpu = "24.0"
+wgpu = "25.0"
 winit = { version = "0.30", default-features = false, features = [
   "rwh_06",
   "x11",
